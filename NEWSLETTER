@@ -1,0 +1,286 @@
+<?php
+/**
+ * Plugin Name: My Newsletter Plugin
+ * Description: Custom newsletter sign-up and management.
+ * Version: 1.0
+ * Author: Winbergh Media
+ * Author URI: https://www.winberghmedia.se
+ */
+
+if (!defined('ABSPATH')) {
+    exit; // Exit if accessed directly
+}
+
+// Create a new table for storing subscriber emails upon plugin activation
+function my_newsletter_create_subscriber_table() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'newsletter_subscribers';
+    
+    $charset_collate = $wpdb->get_charset_collate();
+
+    $sql = "CREATE TABLE $table_name (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        email varchar(255) NOT NULL,
+        PRIMARY KEY  (id)
+    ) $charset_collate;";
+
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    dbDelta($sql);
+}
+
+register_activation_hook(__FILE__, 'my_newsletter_create_subscriber_table');
+
+// Shortcode for Newsletter Sign-Up
+function my_newsletter_signup_form() {
+    $success_message = '';
+    // Check if the form has been submitted
+    if (isset($_POST['newsletter_email'], $_POST['my_newsletter_signup_nonce']) && wp_verify_nonce($_POST['my_newsletter_signup_nonce'], 'my_newsletter_signup')) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'newsletter_subscribers';
+        $email = sanitize_email($_POST['newsletter_email']);
+
+        if (is_email($email)) {
+    $inserted = $wpdb->insert($table_name, array('email' => $email));
+    if($inserted === false) {
+        // Log error
+        error_log("Failed to insert: " . $wpdb->last_error);
+    } else {
+        // Log success
+        error_log("Email inserted successfully");
+    }
+    $success_message = '<div class="newsletter-success-message" style="margin-top: 10px;">Tack för din registrering!</div>';
+} else {
+    $success_message = '<div class="newsletter-success-message" style="margin-top: 10px;">Ogiltig email address.</div>';
+}
+
+    }
+
+    ob_start();
+    ?>
+
+    <form action="<?php echo esc_url($_SERVER['REQUEST_URI']); ?>" method="post" class="newsletter-signup-form" target="hidden_iframe" onsubmit="return showSuccessMessage();">
+
+    <?php wp_nonce_field('my_newsletter_signup', 'my_newsletter_signup_nonce'); ?>
+    <input type="email" name="newsletter_email" placeholder="Ange din epost" required class="newsletter-email-field">
+    <input type="submit" value="Prenumerera" class="newsletter-submit-button">
+
+    <div id="success-message" style="display:none; color: white;">Tack för din registrering!</div>
+
+</form>
+
+    <script>
+function showSuccessMessage() {
+    // Display the success message
+    var messageDiv = document.getElementById('success-message');
+    if (messageDiv) {
+        messageDiv.style.display = 'block';
+
+        // Hide the message after 10 seconds
+        setTimeout(function() {
+            messageDiv.style.display = 'none';
+        }, 10000);
+
+        // Reset the form after a delay
+        setTimeout(function() {
+            document.querySelector('.newsletter-signup-form').reset();
+        }, 1000); // Delay of 1 second before resetting the form
+    }
+
+    // Return true to allow the form to be submitted
+    return true;
+}
+
+
+
+</script>
+
+
+</form>
+    <?php
+    return ob_get_clean();
+}
+add_shortcode('newsletter_signup', 'my_newsletter_signup_form');
+
+// Admin Menu for Newsletter
+function my_newsletter_admin_menu() {
+    add_menu_page('Nyhetsbrev', 'Nyhetsbrev', 'manage_options', 'my-newsletter-plugin', 'my_newsletter_admin_page');
+}
+add_action('admin_menu', 'my_newsletter_admin_menu');
+
+// Admin Page Content
+function my_newsletter_admin_page() {
+    wp_enqueue_media();
+    wp_enqueue_editor();
+    wp_enqueue_script('jquery');
+
+    // Auto-save header, footer, and title upon POST request
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (isset($_POST['my_newsletter_nonce']) && wp_verify_nonce($_POST['my_newsletter_nonce'], 'my_newsletter_save_content')) {
+        // Auto-save Header Image
+        if (isset($_POST['newsletter_header_image'])) {
+            $header_image_url = esc_url_raw($_POST['newsletter_header_image']);
+            update_option('my_newsletter_header_image', $header_image_url);
+        }
+
+        // Auto-save Footer Content
+        if (isset($_POST['newsletter_footer_content'])) {
+            $footer_content = wp_kses_post($_POST['newsletter_footer_content']);
+            update_option('my_newsletter_footer_content', $footer_content);
+        }
+
+        // Save and Send Newsletter
+        if (isset($_POST['newsletter_content']) && isset($_POST['send_newsletter'])) {
+            $newsletter_content = wp_kses_post($_POST['newsletter_content']);
+            update_option('my_newsletter_content', $newsletter_content);
+            
+            // Save Newsletter Title
+            if (isset($_POST['newsletter_title'])) {
+                $newsletter_title = sanitize_text_field($_POST['newsletter_title']);
+                update_option('my_newsletter_title', $newsletter_title);
+            }
+
+            my_newsletter_send();
+            echo '<div class="updated"><p>Nyhetsbrevet skickades utan problem.</p></div>';
+            delete_option('my_newsletter_content'); // Reset newsletter content after sending
+            delete_option('my_newsletter_title'); // Reset newsletter title after sending
+        }
+    } else {
+        echo '<div class="error"><p>Security check failed. Please try again.</p></div>';
+    }
+}
+
+
+    // Retrieve existing settings
+    $header_image_url = get_option('my_newsletter_header_image', '');
+    $newsletter_content = get_option('my_newsletter_content', '');
+    $footer_content = get_option('my_newsletter_footer_content', '');
+    $newsletter_title = get_option('my_newsletter_title', '');
+
+    ob_start();
+    ?>
+    <div class="wrap">
+        <h1>Nyhetsbrev</h1>
+
+        <form method="post">
+            <?php wp_nonce_field('my_newsletter_save_content', 'my_newsletter_nonce'); ?>
+
+            <p style="margin-bottom: 20px;">
+                <label for="newsletter_header_image"><h2>Header URL</h2></label>
+                <input type="text" name="newsletter_header_image" id="newsletter_header_image" value="<?php echo esc_attr($header_image_url); ?>" style="width: 80%;">
+                <button type="button" class="button" id="select-header-image">Select Image</button>
+            </p>
+            <!-- Title Input Field -->
+            <p style="margin-bottom: 20px;">
+                <label for="newsletter_title"><h2>Nyhetsbrev Titel</h2></label>
+                <input type="text" name="newsletter_title" id="newsletter_title" value="<?php echo esc_attr($newsletter_title); ?>" style="width: 100%;">
+            </p>
+            <p style="margin-bottom: 20px;">
+                <label for="newsletter_title"><h2>Innehåll</h2></label>
+            </p>
+            <?php
+            $settings = array('media_buttons' => true, 'textarea_name' => 'newsletter_content', 'textarea_rows' => 10);
+            wp_editor($newsletter_content, 'unique_editor_id', $settings);
+            ?>
+            <p style="margin-bottom: 10px;">
+                <label for="newsletter_title"><h2>Footer</h2></label>
+            </p>
+            <?php
+            $footer_settings = array('media_buttons' => false, 'textarea_name' => 'newsletter_footer_content', 'textarea_rows' => 5);
+            wp_editor($footer_content, 'unique_footer_editor_id', $footer_settings);
+            ?>
+
+<input type="submit" name="send_newsletter" value="Skicka Nyhetsbrev" class="button button-primary" style="margin-top: 20px;">
+<!-- Preview Button -->
+<input type="button" id="preview-newsletter" value="Förhandsgranska Nyhetsbrev" class="button button-secondary" style="margin-left: 10px; margin-top: 20px">        
+</form>
+<div id="newsletter-preview" style="display: none; margin-top: 20px;">
+        <!-- Placeholder for preview content -->
+    </div>
+    </div>
+    
+    <script type="text/javascript">
+    jQuery(document).ready(function($) {
+        $('#preview-newsletter').click(function() {
+            var headerImage = $('#newsletter_header_image').val();
+            var title = $('#newsletter_title').val();
+            var content = tinyMCE.get('unique_editor_id').getContent();
+            var footer = tinyMCE.get('unique_footer_editor_id').getContent();
+
+            var previewContent = '<div><img src="' + headerImage + '" style="width: 100%; height: auto;"></div>';
+        previewContent += '<h3 style="text-align: center;">' + title + '</h3>';
+        previewContent += content;
+        previewContent += '<div style="border-top: 1px solid #ccc; margin: 20px 0;"></div>';
+
+        // Footer content with a logo positioned at the bottom left and spacing for the footer text
+        previewContent += '<div style="position: relative; padding-bottom: 55px;">';
+        // Place the logo above the footer content with some spacing
+        previewContent += '<div style="text-align: center; margin-bottom: 20px;"><img src="https://carcleansweden.se/wp-content/uploads/2024/01/1f.png" style="height: 60px;" alt="Logo"></div>';
+        previewContent += '<div>' + footer + '</div>';
+        previewContent += '</div>';
+
+        previewContent += '<div style="text-align: right;"><a href="https://carcleansweden.se/avregistrera" target="_blank">Avregistrera</a></div>';
+
+
+            
+
+            $('#newsletter-preview').html(previewContent).show();
+        });
+    });
+</script>
+    <?php
+    echo ob_get_clean();
+}
+
+
+
+
+
+// Function to send the newsletter
+function my_newsletter_send() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'newsletter_subscribers';
+
+
+    // Get the newsletter components
+    $header_image_url = get_option('my_newsletter_header_image', '');
+    $content = wpautop(get_option('my_newsletter_content', '')); // Apply wpautop for formatting
+    $footer_content = wpautop(get_option('my_newsletter_footer_content', ''));
+    $newsletter_title = get_option('my_newsletter_title', '');
+
+    // Construct the HTML email
+    $email_content = '<html><body>';
+$email_content .= '<div><img src="' . esc_url($header_image_url) . '" alt="Header Image" style="width: 100%; height: auto;"></div>';
+$email_content .= '<h1 style="text-align: center;">' . esc_html($newsletter_title) . '</h1>'; 
+$email_content .= $content; // Main content with formatting
+$email_content .= '<div style="border-top: 1px solid #ccc; margin: 20px 0;"></div>';
+
+// Footer content with a logo positioned at the bottom left
+$email_content .= '<div style="position: relative; padding-bottom: 55px;">'; // Extra padding to accommodate the logo
+// Center the logo within a div container
+$email_content .= '<div style="text-align: center; margin-top: 20px; margin-bottom: 20px;"><img src="https://carcleansweden.se/wp-content/uploads/2024/01/footer.png" style="height: 50px;" alt="Logo"></div>';
+
+$email_content .= $footer_content;
+
+$email_content .= '</div>';
+
+$email_content .= '<div style="text-align: right;"><a href="https://carcleansweden.se/avregistrera" target="_blank">Avregistrera</a></div>';
+$email_content .= '</body></html>';
+
+
+    $subscribers = $wpdb->get_results("SELECT email FROM $table_name");
+
+    foreach ($subscribers as $subscriber) {
+        wp_mail($subscriber->email, 'Senaste nytt från Carclean!', $email_content, array('Content-Type: text/html; charset=UTF-8'));
+    }
+}
+
+function my_custom_admin_footer_text($footer_text) {
+    $new_footer_text = 'Byggd av <a href="https://winberghmedia.se" target="_blank">Winbergh Media</a>';
+    return $new_footer_text;
+}
+
+add_filter('admin_footer_text', 'my_custom_admin_footer_text');
+
+
+
+
